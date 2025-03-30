@@ -1,0 +1,88 @@
+name: Scheduled Brave Browser Build (Windows)
+
+on:
+  schedule:
+    # Run at 2 AM UTC every day
+    - cron: '0 2 * * *'
+  workflow_dispatch:  # Keep manual trigger option
+
+jobs:
+  build:
+    name: Build Brave Browser for Windows
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '16'
+
+    - name: Cache build files
+      uses: actions/cache@v3
+      with:
+        path: |
+          src/out
+        key: windows-build-${{ github.sha }}
+        restore-keys: |
+          windows-build-
+
+    - name: Install Windows dependencies 
+      run: |
+        choco install ninja visualstudio2019buildtools visualstudio2019-workload-vctools
+
+    - name: Setup depot_tools
+      run: |
+        git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+        $env:PATH = "${{ github.workspace }}\depot_tools;$env:PATH"
+        echo "${{ github.workspace }}\depot_tools" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+    - name: Initialize and build release version
+      run: |
+        $env:PATH = "${{ github.workspace }}\depot_tools;$env:PATH"
+        npm run init
+        npm run sync --init
+        
+        # Create Release build configuration using args.gn file instead of gn command
+        mkdir -p out\Release
+        @"
+        is_debug = false
+        is_official_build = true
+        "@ | Out-File -FilePath out\Release\args.gn -Encoding utf8
+        
+        # Build with release configuration
+        npm run build Release
+
+    - name: Generate release tag
+      id: tag
+      run: |
+        $DATE = Get-Date -Format "yyyy.MM.dd"
+        $BUILD_NUM = Get-Date -Format "HHmm"
+        $TAG_NAME = "v$DATE-$BUILD_NUM"
+        echo "tag_name=$TAG_NAME" >> $env:GITHUB_OUTPUT
+        echo "release_name=Brave Browser Build $TAG_NAME" >> $env:GITHUB_OUTPUT
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ steps.tag.outputs.tag_name }}
+        name: ${{ steps.tag.outputs.release_name }}
+        files: src/out/Release/*.exe
+        body: |
+          Automated Brave Browser Windows build
+          
+          Built from commit: ${{ github.sha }}
+          Build date: ${{ github.event.schedule }}
+        draft: false
+        prerelease: false
+        make_latest: true
+
